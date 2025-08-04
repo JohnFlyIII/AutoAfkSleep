@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "id": "autoafksleep",
+  "version": "1.0.0",
+  "name": "AutoAFK Sleep",
+  "description": "Automatically uses beds at night when AFK, with chat monitoring and failure handling",
+  "authors": [
+    "John Fly"
+  ],
+  "contact": {
+    "homepage": "https://github.com/JohnFlyIII/AutoAfkSleep",
+    "sources": "https://github.com/JohnFlyIII/AutoAfkSleep",
+    "issues": "https://github.com/JohnFlyIII/AutoAfkSleep/issues"
+  },
+  "license": "Apache-2.0",
+  "icon": "assets/autoafksleep/icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "com.johnflyiii.autoafksleep.AutoAFKSleep"
+    ],
+    "modmenu": [
+      "com.johnflyiii.autoafksleep.ModMenuIntegration"
+    ]
+  },
+  "mixins": [],
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "fabric-api": "*",
+    "minecraft": ">=1.21",
+    "java": ">=21"
+  },
+  "suggests": {
+    "modmenu": "*"
+  }
+}
