@@ -56,7 +56,7 @@ import java.util.Comparator;
  * - Configurable failure actions (disconnect, custom command, or nothing)
  * 
  * @author John Fly
- * @version 1.0.0
+ * @version 1.0.1
  */
 public class AutoAFKSleep implements ClientModInitializer {
     public static final String MOD_ID = "autoafksleep";
@@ -105,8 +105,12 @@ public class AutoAFKSleep implements ClientModInitializer {
         // Register tick event
         ClientTickEvents.END_CLIENT_TICK.register(this::onClientTick);
         
-        // Register chat event
+        // Register chat events - both GAME (server messages) and CHAT (player messages)
         ClientReceiveMessageEvents.GAME.register(this::onChatMessage);
+        ClientReceiveMessageEvents.CHAT.register((message, signedMessage, sender, params, receptionTimestamp) -> {
+            // Forward chat messages to our handler with overlay=false since chat messages aren't overlays
+            onChatMessage(message, false);
+        });
         
         // Register commands
         registerCommands();
@@ -122,18 +126,8 @@ public class AutoAFKSleep implements ClientModInitializer {
         // Add keybind listener
         ClientTickEvents.END_CLIENT_TICK.register(this::onKeyPress);
         
-        // Add shutdown hook to disable mod when game closes
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            if (config != null && config.modEnabled) {
-                LOGGER.info("Game shutting down - disabling mod for next launch (safety feature)");
-                config.modEnabled = false;
-                config.save();
-            }
-        }));
-        
         LOGGER.info("AutoAFK Sleep mod initialized successfully");
         LOGGER.info("Mod is currently: {}", config.modEnabled ? "ENABLED" : "DISABLED");
-        LOGGER.info("Note: Mod will be disabled on shutdown for safety");
         LOGGER.info("Using smart time checking - checks more frequently near night time");
     }
     
@@ -320,10 +314,10 @@ public class AutoAFKSleep implements ClientModInitializer {
     }
     
     private void onChatMessage(Text message, boolean overlay) {
-        LOGGER.debug("Chat message received: {} (overlay: {})", message.getString(), overlay);
+        LOGGER.info("Chat message received: {} (overlay: {})", message.getString(), overlay);
         
         if (!config.modEnabled || overlay) {
-            LOGGER.debug("Ignoring message - mod disabled or overlay message");
+            LOGGER.info("Ignoring message - mod disabled: {}, overlay: {}", !config.modEnabled, overlay);
             return;
         }
         
@@ -338,16 +332,20 @@ public class AutoAFKSleep implements ClientModInitializer {
         String playerNameLower = playerName.toLowerCase();
         LOGGER.info("Processing message: '{}' (player: {})", fullMessage, playerName);
         
-        // Check if this is the bot's own instruction message
-        // Simple and robust: if message contains player name AND the instruction text AND the disconnect phrase
-        boolean isOwnInstructionMessage = false;
-        if (config.disconnectPhraseEnabled && config.disconnectPhrase != null && !config.disconnectPhrase.isEmpty()) {
-            isOwnInstructionMessage = fullMessage.contains(playerName) && 
-                                    fullMessage.contains("To force me to disconnect say:") && 
-                                    fullMessage.contains(config.disconnectPhrase);
-            if (isOwnInstructionMessage) {
-                LOGGER.info("Ignoring own instruction message");
-            }
+        // ONLY ignore our own auto-response messages - nothing else!
+        boolean isOurAutoResponse = false;
+        if (config.autoRespond && config.responseMessage != null) {
+            isOurAutoResponse = fullMessage.contains(config.responseMessage);
+        }
+        // Also ignore the disconnect instruction message
+        if (!isOurAutoResponse && config.disconnectPhraseEnabled && config.disconnectPhrase != null) {
+            isOurAutoResponse = fullMessage.contains("To force me to disconnect say:") && 
+                               fullMessage.contains(config.disconnectPhrase);
+        }
+        
+        if (isOurAutoResponse) {
+            LOGGER.info("Ignoring our own auto-response message");
+            return;
         }
         
         // Detect message type
@@ -355,31 +353,39 @@ public class AutoAFKSleep implements ClientModInitializer {
         boolean isAboutSleep = false;
         boolean mentionsPlayer = false;
         
-        // Common direct message patterns
+        // Common direct message patterns - be more inclusive
         if (messageText.contains(" whispers to you:") ||
             messageText.contains(" whispers:") ||
-            messageText.startsWith("/msg " + playerNameLower) ||
-            messageText.startsWith("/tell " + playerNameLower) ||
-            messageText.contains(" -> " + playerNameLower + ":") ||
+            messageText.contains("/msg " + playerNameLower) ||
+            messageText.contains("/tell " + playerNameLower) ||
+            messageText.contains("/w " + playerNameLower) ||
+            messageText.contains(" -> " + playerNameLower) ||
             messageText.contains(" -> me]") ||  // Format: [[S] DocSplinters -> me]
             messageText.contains("@" + playerNameLower) ||  // Format: @NiceAndEasy
             messageText.startsWith(playerNameLower + ",") ||
-            messageText.startsWith(playerNameLower + ":")) {
+            messageText.startsWith(playerNameLower + ":") ||
+            messageText.endsWith(" " + playerNameLower) ||  // "hey NiceAndEasy"
+            messageText.endsWith(" " + playerNameLower + "?")) {  // "are you there NiceAndEasy?"
             isDirectMessage = true;
         }
         
-        // Check if message is about sleeping
+        // Check if message is about sleeping or AFK
         if (messageText.contains("sleep") || 
             messageText.contains("bed") || 
             messageText.contains("night") ||
-            messageText.contains("afk")) {
+            messageText.contains("afk") ||
+            messageText.contains("away") ||
+            messageText.contains("there") ||
+            messageText.contains("hello") ||
+            messageText.contains("wake")) {
             isAboutSleep = true;
         }
         
         // Check if player is mentioned (but not in a system message)
         if (messageText.contains(playerNameLower) && 
             !messageText.contains("joined the game") &&
-            !messageText.contains("left the game")) {
+            !messageText.contains("left the game") &&
+            !messageText.contains("has made the advancement")) {
             mentionsPlayer = true;
         }
         
@@ -387,9 +393,8 @@ public class AutoAFKSleep implements ClientModInitializer {
         LOGGER.info("Message classification - Direct: {}, About Sleep: {}, Mentions Player: {}", 
             isDirectMessage, isAboutSleep, mentionsPlayer);
         
-        // Check for disconnect phrase in ANY message - be permissive to avoid frustrating other players
-        // But skip our own instruction message to avoid self-disconnect
-        if (!isOwnInstructionMessage && config.disconnectPhraseEnabled && config.disconnectPhrase != null && !config.disconnectPhrase.isEmpty()) {
+        // Check for disconnect phrase in ANY message (including player's own for testing!)
+        if (config.disconnectPhraseEnabled && config.disconnectPhrase != null && !config.disconnectPhrase.isEmpty()) {
             String disconnectPhraseLower = config.disconnectPhrase.toLowerCase();
             LOGGER.info("Checking for disconnect phrase '{}' in message", disconnectPhraseLower);
             
@@ -414,31 +419,17 @@ public class AutoAFKSleep implements ClientModInitializer {
             }
         }
         
-        // Auto-respond logic
+        // Auto-respond logic - respond to ANY message that mentions us or sleep/afk keywords
         if (config.autoRespond && config.responseMessage != null && !config.responseMessage.isEmpty()) {
             boolean shouldRespond = false;
-            String response = config.responseMessage;
             
-            // Priority 1: Direct messages always get a response
-            if (isDirectMessage) {
-                shouldRespond = true;
-                LOGGER.debug("Responding to direct message: {}", fullMessage);
-            }
-            // Priority 2: Messages about sleep that mention the player
-            else if (isAboutSleep && mentionsPlayer) {
-                shouldRespond = true;
-                // Use configured response message, don't override it
-                LOGGER.debug("Responding to sleep-related mention: {}", fullMessage);
-            }
-            // Priority 3: Other mentions only if they seem important
-            else if (mentionsPlayer && !isSystemMessage(messageText)) {
-                // Only respond if it seems like someone is trying to get attention
-                if (messageText.contains("?") || 
-                    messageText.contains("please") ||
-                    messageText.contains("need") ||
-                    messageText.contains("help")) {
+            // Respond if: direct message, mentions player, or contains sleep/afk keywords
+            if (isDirectMessage || mentionsPlayer || isAboutSleep) {
+                // Don't respond to system messages
+                if (!isSystemMessage(messageText)) {
                     shouldRespond = true;
-                    LOGGER.debug("Responding to important mention: {}", fullMessage);
+                    LOGGER.info("Will respond - Direct: {}, Mentions: {}, AboutSleep: {}", 
+                        isDirectMessage, mentionsPlayer, isAboutSleep);
                 }
             }
             
@@ -458,7 +449,7 @@ public class AutoAFKSleep implements ClientModInitializer {
                     // Ignore
                 }
                 
-                sendChatMessage(client, response);
+                sendChatMessage(client, config.responseMessage);
                 
                 // If disconnect phrase is enabled, send a second message with instructions
                 if (config.disconnectPhraseEnabled && config.disconnectPhrase != null && !config.disconnectPhrase.isEmpty()) {
@@ -534,7 +525,7 @@ public class AutoAFKSleep implements ClientModInitializer {
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
             dispatcher.register(ClientCommandManager.literal("autoafksleep")
                 .executes(context -> {
-                    context.getSource().sendFeedback(Text.literal("AutoAFK Sleep v1.0.0 - Use /autoafksleep help for commands"));
+                    context.getSource().sendFeedback(Text.literal("AutoAFK Sleep v1.0.1 - Use /autoafksleep help for commands"));
                     return 1;
                 })
                 .then(ClientCommandManager.literal("help")

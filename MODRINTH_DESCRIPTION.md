@@ -28,10 +28,10 @@ When unable to sleep, choose your preferred action:
 - **Auto-Disconnect** - Safely disconnects from the server
 - **Custom Command** - Executes any command (e.g., `/spawn`, `/home`, `/warp afkspot`)
 
-**🛡️ Safety First Design**
-- Mod always starts DISABLED when launching the game
-- Prevents accidental disconnects if you load into a world at night
-- Simply enable with `/autoafksleep enable` or press K when ready
+**🛡️ Safety Features**
+- Configure custom disconnect phrases
+- Set auto-response messages
+- Cooldown system prevents spam
 
 ## 📋 Requirements
 

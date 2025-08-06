@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.1] - 2025-08-06
+
+### Fixed
+- Fixed chat message processing - now properly detects both player and server messages
+- Fixed disconnect phrase detection - players can now test by typing the phrase themselves
+- Fixed auto-response triggers - now responds to messages containing sleep/AFK keywords
+
+### Changed
+- Removed auto-disable on shutdown feature - mod settings now persist between sessions
+- Simplified message processing logic - only ignores the mod's own auto-response messages
+- Improved auto-response detection for various chat formats
+
 ## [1.0.0] - 2025-08-04
 
 ### Initial Release
@@ -13,7 +25,6 @@
 - **Configuration GUI**: Easy-to-use settings screen accessible via keybind (default: K)
 - **Commands**: Full command system for all features (`/autoafksleep help`)
 - **ModMenu Integration**: Access settings through ModMenu if installed
-- **Safety Start**: Mod always starts disabled to prevent accidental disconnects on world load
 
 #### Technical Details
 - Client-side only mod

@@ -24,7 +24,6 @@ public class InstructionsScreen extends Screen {
         instructions.add("• Automatically sleeps when night falls (if near a bed)");
         instructions.add("• Must be within 2 blocks of a bed to sleep");
         instructions.add("• Works in Overworld only (beds explode in Nether/End!)");
-        instructions.add("• SAFETY: Always starts disabled when game loads");
         instructions.add("");
         instructions.add("Auto-Respond Messages:");
         instructions.add("• Responds to direct messages and @mentions");

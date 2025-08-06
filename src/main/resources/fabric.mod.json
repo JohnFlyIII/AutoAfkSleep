@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "autoafksleep",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "name": "AutoAFK Sleep",
   "description": "Automatically uses beds at night when AFK, with chat monitoring and failure handling",
   "authors": [

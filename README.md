@@ -76,7 +76,6 @@ Choose what happens when unable to sleep:
 
 ## Tips
 
-- **Safety Feature**: The mod always starts DISABLED when you launch the game (prevents accidental disconnects if you load in at night)
 - Keep a bed within 2 blocks of your AFK spot
 - Choose a unique disconnect phrase to avoid accidental triggers
 - Test your custom commands before going AFK
