@@ -45,6 +45,11 @@ import org.slf4j.LoggerFactory;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Set;
+import java.util.HashSet;
+import java.util.regex.Pattern;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * AutoAFKSleep - A Minecraft Fabric mod that automatically sleeps when AFK
@@ -56,7 +61,7 @@ import java.util.Comparator;
  * - Configurable failure actions (disconnect, custom command, or nothing)
  * 
  * @author John Fly
- * @version 1.0.1
+ * @version 1.2.1
  */
 public class AutoAFKSleep implements ClientModInitializer {
     public static final String MOD_ID = "autoafksleep";
@@ -64,21 +69,30 @@ public class AutoAFKSleep implements ClientModInitializer {
     
     private static AutoAFKSleep instance;
     private ModConfig config;
+    private AutoEat autoEat;
     private int tickCounter = 0;
     private long lastSleepAttempt = 0;
-    private static final long SLEEP_ATTEMPT_COOLDOWN = 3000; // 3 seconds
     private long lastChatResponse = 0;
-    private static final long CHAT_RESPONSE_COOLDOWN = 30000; // 30 seconds between responses
     
-    // Smart timing constants
+    // Time constants
     private static final int NIGHT_START = 12541;
     private static final int NIGHT_END = 23458;
     private static final int DAY_LENGTH = 24000;
-    private static final int TICKS_PER_MINUTE = 1200; // Minecraft minutes (20 ticks = 1 second, 60 seconds = 1 minute)
-    private static final int CHECK_INTERVAL_FAR = 600; // 30 seconds when far from night
-    private static final int CHECK_INTERVAL_NEAR = 200; // 10 seconds when near night
-    private static final int CHECK_INTERVAL_NIGHT = 100; // 5 seconds during night
+    private static final int TICKS_PER_SECOND = 20;
+    
+    // Fixed timing parameters
+    private static final int CHECK_INTERVAL_OTHER_DIMENSION_TICKS = 6000; // 5 minutes in nether/end
+    
+    // State tracking
     private int nextCheckTick = 0;
+    private int consecutiveFailures = 0;
+    
+    // Performance optimizations
+    private final Set<String> sleepKeywords = new HashSet<>();
+    private final Set<String> systemMessagePatterns = new HashSet<>();
+    private Pattern directMessagePattern;
+    private long lastDimensionCheck = 0;
+    private String cachedDimension = null;
     
     // Sleep verification tracking
     private BlockPos pendingSleepPos = null;
@@ -101,6 +115,13 @@ public class AutoAFKSleep implements ClientModInitializer {
         // Load configuration
         config = ModConfig.load();
         LOGGER.info("Configuration loaded successfully");
+        
+        // Initialize performance optimizations
+        initializePatterns();
+        
+        // Initialize AutoEat feature
+        autoEat = new AutoEat();
+        configureAutoEat();
         
         // Register tick event
         ClientTickEvents.END_CLIENT_TICK.register(this::onClientTick);
@@ -128,12 +149,46 @@ public class AutoAFKSleep implements ClientModInitializer {
         
         LOGGER.info("AutoAFK Sleep mod initialized successfully");
         LOGGER.info("Mod is currently: {}", config.modEnabled ? "ENABLED" : "DISABLED");
-        LOGGER.info("Using smart time checking - checks more frequently near night time");
+        LOGGER.info("Using intelligent time-based scheduling - sleeping until night approaches");
+    }
+    
+    private void initializePatterns() {
+        // Initialize sleep keywords for faster lookup
+        sleepKeywords.add("sleep");
+        sleepKeywords.add("bed");
+        sleepKeywords.add("night");
+        sleepKeywords.add("afk");
+        sleepKeywords.add("away");
+        sleepKeywords.add("there");
+        sleepKeywords.add("hello");
+        sleepKeywords.add("wake");
+        
+        // System message patterns
+        systemMessagePatterns.add("has made the advancement");
+        systemMessagePatterns.add("was slain by");
+        systemMessagePatterns.add("fell from");
+        systemMessagePatterns.add("drowned");
+        systemMessagePatterns.add("died");
+        systemMessagePatterns.add("joined the game");
+        systemMessagePatterns.add("left the game");
+        systemMessagePatterns.add("[server]");
+        systemMessagePatterns.add("[system]");
+        
+        // Compile regex pattern for direct messages (compiled once for performance)
+        directMessagePattern = Pattern.compile(
+            ".*(?:whispers?(?:\\s+to\\s+you)?:|/(?:msg|tell|w)\\s+|->\\s*(?:me\\])?|@).*",
+            Pattern.CASE_INSENSITIVE
+        );
     }
     
     private void onClientTick(MinecraftClient client) {
         if (!config.modEnabled || client.player == null || client.world == null) {
             return;
+        }
+        
+        // Process AutoEat feature
+        if (config.autoEatEnabled) {
+            autoEat.tick(client);
         }
         
         tickCounter++;
@@ -154,84 +209,63 @@ public class AutoAFKSleep implements ClientModInitializer {
             return;
         }
         
-        // Check dimension - beds explode in Nether and End
-        String dimension = client.world.getRegistryKey().getValue().toString();
-        if (dimension.contains("the_nether") || dimension.contains("the_end")) {
-            LOGGER.debug("In dimension {}, sleeping disabled (beds explode!)", dimension);
-            nextCheckTick = tickCounter + CHECK_INTERVAL_FAR;
+        // Check dimension with caching for performance
+        if (!isOverworldDimension(client)) {
+            nextCheckTick = tickCounter + CHECK_INTERVAL_OTHER_DIMENSION_TICKS;
             return;
         }
         
         long timeOfDay = client.world.getTimeOfDay() % DAY_LENGTH;
         
-        // Calculate time until night
-        int timeUntilNight = 0;
-        if (timeOfDay < NIGHT_START) {
-            timeUntilNight = NIGHT_START - (int)timeOfDay;
-        } else if (timeOfDay > NIGHT_END) {
-            timeUntilNight = (DAY_LENGTH - (int)timeOfDay) + NIGHT_START;
-        }
-        
-        // Determine next check interval based on time
+        // Calculate intelligent delay based on current time
         if (timeOfDay >= NIGHT_START && timeOfDay <= NIGHT_END) {
             // It's night time
-            if (!client.player.isSleeping() && System.currentTimeMillis() - lastSleepAttempt >= SLEEP_ATTEMPT_COOLDOWN) {
-                LOGGER.debug("Night time ({}), attempting to sleep", timeOfDay);
-                tryToSleep(client);
+            if (!client.player.isSleeping() && System.currentTimeMillis() - lastSleepAttempt >= config.sleepAttemptCooldownSeconds * 1000L) {
+                // Check if we've failed too many times
+                if (consecutiveFailures >= config.maxConsecutiveFailures) {
+                    // Wait until next night
+                    int ticksUntilNextNight = calculateTicksUntilNextNight(timeOfDay);
+                    nextCheckTick = tickCounter + ticksUntilNextNight;
+                    LOGGER.info("Too many failures. Waiting {} seconds until next night", ticksUntilNextNight / TICKS_PER_SECOND);
+                } else {
+                    LOGGER.debug("Night time ({}), attempting to sleep (attempt {} of {})", 
+                        timeOfDay, consecutiveFailures + 1, config.maxConsecutiveFailures);
+                    tryToSleep(client);
+                    nextCheckTick = tickCounter + config.checkIntervalNightSeconds * TICKS_PER_SECOND;
+                }
+            } else {
+                nextCheckTick = tickCounter + config.checkIntervalNightSeconds * TICKS_PER_SECOND;
             }
-            nextCheckTick = tickCounter + CHECK_INTERVAL_NIGHT;
-        } else if (timeUntilNight < TICKS_PER_MINUTE * 2) {
-            // Less than 2 Minecraft minutes until night
-            LOGGER.debug("Night approaching in {} ticks, checking more frequently", timeUntilNight);
-            nextCheckTick = tickCounter + CHECK_INTERVAL_NEAR;
         } else {
-            // Far from night
-            nextCheckTick = tickCounter + CHECK_INTERVAL_FAR;
+            // Calculate intelligent delay until night
+            int ticksUntilNight = calculateTicksUntilNight(timeOfDay);
+            nextCheckTick = tickCounter + ticksUntilNight;
+            
+            // Reset failure counter during day
+            consecutiveFailures = 0;
+            
+            LOGGER.info("Day time ({}). Next check in {} seconds", 
+                timeOfDay, ticksUntilNight / TICKS_PER_SECOND);
         }
     }
     
     private void tryToSleep(MinecraftClient client) {
         ClientPlayerEntity player = client.player;
-        if (player == null) return;
+        if (player == null || client.world == null) return;
         
-        Vec3d playerEyePos = player.getEyePos();
-        BlockPos playerPos = player.getBlockPos();
-        
-        // Collect all reachable beds
-        List<BlockPos> reachableBeds = new ArrayList<>();
-        
-        for (int x = -BED_SEARCH_RADIUS; x <= BED_SEARCH_RADIUS; x++) {
-            for (int y = -BED_SEARCH_RADIUS; y <= BED_SEARCH_RADIUS; y++) {
-                for (int z = -BED_SEARCH_RADIUS; z <= BED_SEARCH_RADIUS; z++) {
-                    BlockPos pos = playerPos.add(x, y, z);
-                    BlockState state = client.world.getBlockState(pos);
-                    
-                    if (state.getBlock() instanceof BedBlock) {
-                        // Check if bed is within reach distance from player's eye position
-                        Vec3d bedCenter = Vec3d.ofCenter(pos);
-                        double distanceSq = playerEyePos.squaredDistanceTo(bedCenter);
-                        
-                        if (distanceSq <= MAX_INTERACT_DISTANCE_SQ) {
-                            reachableBeds.add(pos);
-                        }
-                    }
-                }
-            }
-        }
+        List<BlockPos> reachableBeds = findReachableBeds(client, player);
         
         if (reachableBeds.isEmpty()) {
             LOGGER.info("No beds within reach (max {} blocks). Move closer to a bed!", MAX_INTERACT_DISTANCE);
+            consecutiveFailures++;
             handleSleepFailure(client);
             return;
         }
         
-        // Sort by distance (closest first)
-        reachableBeds.sort(Comparator.comparingDouble(pos -> 
-            playerEyePos.squaredDistanceTo(Vec3d.ofCenter(pos))));
-        
         LOGGER.debug("Found {} reachable bed(s)", reachableBeds.size());
         
-        // Try beds in order of distance
+        // Try beds in order of distance (already sorted in findReachableBeds)
+        Vec3d playerEyePos = player.getEyePos();
         for (BlockPos bedPos : reachableBeds) {
             double distance = Math.sqrt(playerEyePos.squaredDistanceTo(Vec3d.ofCenter(bedPos)));
             if (attemptToUseBed(client, bedPos)) {
@@ -243,6 +277,7 @@ public class AutoAFKSleep implements ClientModInitializer {
         
         // Couldn't use any bed
         LOGGER.info("Failed to use any of {} reachable beds", reachableBeds.size());
+        consecutiveFailures++;
         handleSleepFailure(client);
     }
     
@@ -287,8 +322,10 @@ public class AutoAFKSleep implements ClientModInitializer {
         
         if (player.isSleeping()) {
             LOGGER.info("Successfully sleeping!");
+            consecutiveFailures = 0; // Reset on success
         } else {
             LOGGER.info("Sleep verification failed - player not in bed after {}ms", SLEEP_VERIFY_DELAY * 50);
+            consecutiveFailures++;
             handleSleepFailure(client);
         }
     }
@@ -314,10 +351,14 @@ public class AutoAFKSleep implements ClientModInitializer {
     }
     
     private void onChatMessage(Text message, boolean overlay) {
-        LOGGER.info("Chat message received: {} (overlay: {})", message.getString(), overlay);
+        // Skip overlay messages silently (coordinates, etc.)
+        if (overlay) {
+            return;
+        }
         
-        if (!config.modEnabled || overlay) {
-            LOGGER.info("Ignoring message - mod disabled: {}, overlay: {}", !config.modEnabled, overlay);
+        LOGGER.debug("Chat message received: {}", message.getString());
+        
+        if (!config.modEnabled) {
             return;
         }
         
@@ -330,7 +371,7 @@ public class AutoAFKSleep implements ClientModInitializer {
         String messageText = fullMessage.toLowerCase();
         String playerName = client.player.getName().getString();
         String playerNameLower = playerName.toLowerCase();
-        LOGGER.info("Processing message: '{}' (player: {})", fullMessage, playerName);
+        LOGGER.debug("Processing message: '{}' (player: {})", fullMessage, playerName);
         
         // ONLY ignore our own auto-response messages - nothing else!
         boolean isOurAutoResponse = false;
@@ -353,32 +394,17 @@ public class AutoAFKSleep implements ClientModInitializer {
         boolean isAboutSleep = false;
         boolean mentionsPlayer = false;
         
-        // Common direct message patterns - be more inclusive
-        if (messageText.contains(" whispers to you:") ||
-            messageText.contains(" whispers:") ||
-            messageText.contains("/msg " + playerNameLower) ||
-            messageText.contains("/tell " + playerNameLower) ||
-            messageText.contains("/w " + playerNameLower) ||
-            messageText.contains(" -> " + playerNameLower) ||
-            messageText.contains(" -> me]") ||  // Format: [[S] DocSplinters -> me]
-            messageText.contains("@" + playerNameLower) ||  // Format: @NiceAndEasy
-            messageText.startsWith(playerNameLower + ",") ||
-            messageText.startsWith(playerNameLower + ":") ||
-            messageText.endsWith(" " + playerNameLower) ||  // "hey NiceAndEasy"
-            messageText.endsWith(" " + playerNameLower + "?")) {  // "are you there NiceAndEasy?"
+        // Check for direct message patterns (optimized)
+        if (isDirectMessageToPlayer(messageText, playerNameLower)) {
             isDirectMessage = true;
         }
         
-        // Check if message is about sleeping or AFK
-        if (messageText.contains("sleep") || 
-            messageText.contains("bed") || 
-            messageText.contains("night") ||
-            messageText.contains("afk") ||
-            messageText.contains("away") ||
-            messageText.contains("there") ||
-            messageText.contains("hello") ||
-            messageText.contains("wake")) {
-            isAboutSleep = true;
+        // Check if message contains sleep keywords (optimized with Set lookup)
+        for (String keyword : sleepKeywords) {
+            if (messageText.contains(keyword)) {
+                isAboutSleep = true;
+                break;
+            }
         }
         
         // Check if player is mentioned (but not in a system message)
@@ -402,19 +428,17 @@ public class AutoAFKSleep implements ClientModInitializer {
                 LOGGER.info("Disconnect phrase '{}' detected in message: {}", 
                     config.disconnectPhrase, fullMessage);
                 
-                // Send acknowledgment before disconnecting
+                // Send acknowledgment before disconnecting (non-blocking)
                 if (config.autoRespond) {
                     sendChatMessage(client, "Disconnecting due to AFK phrase. Goodbye!");
-                    
-                    // Small delay to let message send
-                    try {
-                        Thread.sleep(500);
-                    } catch (InterruptedException e) {
-                        // Ignore
-                    }
+                    // Schedule disconnect after message sends
+                    CompletableFuture.delayedExecutor(500, TimeUnit.MILLISECONDS).execute(() -> {
+                        disconnect(client, "disconnect phrase detected");
+                    });
+                    return;
                 }
                 
-                disconnect(client, "disconnect phrase detected");
+                // Disconnect already scheduled in callback
                 return;
             }
         }
@@ -436,30 +460,15 @@ public class AutoAFKSleep implements ClientModInitializer {
             if (shouldRespond) {
                 // Check cooldown to prevent spam
                 long currentTime = System.currentTimeMillis();
-                if (currentTime - lastChatResponse < CHAT_RESPONSE_COOLDOWN) {
+                long cooldownMs = config.chatResponseCooldownSeconds * 1000L;
+                if (currentTime - lastChatResponse < cooldownMs) {
                     LOGGER.debug("Skipping response due to cooldown ({} seconds remaining)", 
-                        (CHAT_RESPONSE_COOLDOWN - (currentTime - lastChatResponse)) / 1000);
+                        (cooldownMs - (currentTime - lastChatResponse)) / 1000);
                     return;
                 }
                 
-                // Add a small delay to seem more human-like
-                try {
-                    Thread.sleep(1000 + (long)(Math.random() * 2000)); // 1-3 second delay
-                } catch (InterruptedException e) {
-                    // Ignore
-                }
-                
-                sendChatMessage(client, config.responseMessage);
-                
-                // If disconnect phrase is enabled, send a second message with instructions
-                if (config.disconnectPhraseEnabled && config.disconnectPhrase != null && !config.disconnectPhrase.isEmpty()) {
-                    try {
-                        Thread.sleep(500); // Small delay between messages
-                    } catch (InterruptedException e) {
-                        // Ignore
-                    }
-                    sendChatMessage(client, "To force me to disconnect say: " + config.disconnectPhrase);
-                }
+                // Schedule response with delay (non-blocking)
+                scheduleDelayedResponse(client, config.responseMessage, 1000 + (long)(Math.random() * 2000));
                 
                 lastChatResponse = currentTime;
             }
@@ -467,15 +476,13 @@ public class AutoAFKSleep implements ClientModInitializer {
     }
     
     private boolean isSystemMessage(String message) {
-        return message.contains("has made the advancement") ||
-               message.contains("was slain by") ||
-               message.contains("fell from") ||
-               message.contains("drowned") ||
-               message.contains("died") ||
-               message.contains("joined the game") ||
-               message.contains("left the game") ||
-               message.contains("[server]") ||
-               message.contains("[system]");
+        // Optimized with Set lookup
+        for (String pattern : systemMessagePatterns) {
+            if (message.contains(pattern)) {
+                return true;
+            }
+        }
+        return false;
     }
     
     private void sendChatMessage(MinecraftClient client, String message) {
@@ -525,7 +532,7 @@ public class AutoAFKSleep implements ClientModInitializer {
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
             dispatcher.register(ClientCommandManager.literal("autoafksleep")
                 .executes(context -> {
-                    context.getSource().sendFeedback(Text.literal("AutoAFK Sleep v1.0.1 - Use /autoafksleep help for commands"));
+                    context.getSource().sendFeedback(Text.literal("AutoAFK Sleep v1.2.1 - Use /autoafksleep help for commands"));
                     return 1;
                 })
                 .then(ClientCommandManager.literal("help")
@@ -536,6 +543,8 @@ public class AutoAFKSleep implements ClientModInitializer {
                         context.getSource().sendFeedback(Text.literal("/autoafksleep toggle - Toggle mod on/off"));
                         context.getSource().sendFeedback(Text.literal("/autoafksleep status - Show current status"));
                         context.getSource().sendFeedback(Text.literal("/autoafksleep config <option> <value> - Configure mod"));
+                        context.getSource().sendFeedback(Text.literal("/autoafksleep config autoEat <true/false> - Toggle AutoEat"));
+                        context.getSource().sendFeedback(Text.literal("/autoafksleep config autoEatThreshold <1-19> - Set hunger threshold"));
                         context.getSource().sendFeedback(Text.literal("/autoafksleep ui - Open configuration GUI"));
                         return 1;
                     }))
@@ -568,6 +577,7 @@ public class AutoAFKSleep implements ClientModInitializer {
                         context.getSource().sendFeedback(Text.literal("Auto Respond: " + (config.autoRespond ? "Enabled" : "Disabled")));
                         context.getSource().sendFeedback(Text.literal("Disconnect Phrase: " + (config.disconnectPhraseEnabled ? "'" + config.disconnectPhrase + "'" : "Disabled")));
                         context.getSource().sendFeedback(Text.literal("Bed Interaction Range: 2 blocks (fixed)"));
+                        context.getSource().sendFeedback(Text.literal("AutoEat: " + (config.autoEatEnabled ? "Enabled (threshold: " + config.autoEatHungerThreshold + "/20)" : "Disabled")));
                         
                         // Show timing info if in game
                         MinecraftClient client = MinecraftClient.getInstance();
@@ -580,8 +590,9 @@ public class AutoAFKSleep implements ClientModInitializer {
                                 int timeUntilNight = timeOfDay < NIGHT_START ? 
                                     NIGHT_START - (int)timeOfDay : 
                                     (DAY_LENGTH - (int)timeOfDay) + NIGHT_START;
-                                timeStatus = String.format("Day (night in %d ticks / %.1f seconds)", 
-                                    timeUntilNight, timeUntilNight / 20.0f);
+                                int nextCheckIn = Math.max(0, nextCheckTick - tickCounter);
+                                timeStatus = String.format("Day (night in %.1f seconds, next check in %.1f seconds)", 
+                                    timeUntilNight / (float)TICKS_PER_SECOND, nextCheckIn / (float)TICKS_PER_SECOND);
                             }
                             context.getSource().sendFeedback(Text.literal("Current time: " + timeOfDay + " - " + timeStatus));
                         }
@@ -648,6 +659,46 @@ public class AutoAFKSleep implements ClientModInitializer {
                                 context.getSource().sendFeedback(Text.literal("Disconnect phrase set to: " + config.disconnectPhrase));
                                 return 1;
                             })))
+                    .then(ClientCommandManager.literal("autoEat")
+                        .then(ClientCommandManager.argument("enabled", BoolArgumentType.bool())
+                            .executes(context -> {
+                                config.autoEatEnabled = BoolArgumentType.getBool(context, "enabled");
+                                saveConfig();
+                                context.getSource().sendFeedback(Text.literal("AutoEat " + (config.autoEatEnabled ? "enabled" : "disabled")));
+                                return 1;
+                            })))
+                    .then(ClientCommandManager.literal("autoEatThreshold")
+                        .then(ClientCommandManager.argument("threshold", IntegerArgumentType.integer(1, 19))
+                            .executes(context -> {
+                                config.autoEatHungerThreshold = IntegerArgumentType.getInteger(context, "threshold");
+                                saveConfig();
+                                context.getSource().sendFeedback(Text.literal("AutoEat hunger threshold set to: " + config.autoEatHungerThreshold + "/20"));
+                                return 1;
+                            })))
+                    .then(ClientCommandManager.literal("autoEatStews")
+                        .then(ClientCommandManager.argument("enabled", BoolArgumentType.bool())
+                            .executes(context -> {
+                                config.autoEatStews = BoolArgumentType.getBool(context, "enabled");
+                                saveConfig();
+                                context.getSource().sendFeedback(Text.literal("AutoEat stews/soups " + (config.autoEatStews ? "enabled" : "disabled")));
+                                return 1;
+                            })))
+                    .then(ClientCommandManager.literal("autoEatMinFood")
+                        .then(ClientCommandManager.argument("value", IntegerArgumentType.integer(1, 20))
+                            .executes(context -> {
+                                config.autoEatMinFoodValue = IntegerArgumentType.getInteger(context, "value");
+                                saveConfig();
+                                context.getSource().sendFeedback(Text.literal("AutoEat minimum food value set to: " + config.autoEatMinFoodValue));
+                                return 1;
+                            })))
+                    .then(ClientCommandManager.literal("autoEatDisconnect")
+                        .then(ClientCommandManager.argument("enabled", BoolArgumentType.bool())
+                            .executes(context -> {
+                                config.autoEatDisconnectOnNoFood = BoolArgumentType.getBool(context, "enabled");
+                                saveConfig();
+                                context.getSource().sendFeedback(Text.literal("AutoEat disconnect on no food " + (config.autoEatDisconnectOnNoFood ? "enabled" : "disabled")));
+                                return 1;
+                            })))
             ));
         });
     }
@@ -662,6 +713,141 @@ public class AutoAFKSleep implements ClientModInitializer {
     
     public void saveConfig() {
         config.save();
+        configureAutoEat();
         LOGGER.info("Configuration saved");
+    }
+    
+    private void configureAutoEat() {
+        if (autoEat != null) {
+            autoEat.setEnabled(config.autoEatEnabled);
+            autoEat.setHungerThreshold(config.autoEatHungerThreshold);
+            autoEat.setEatStew(config.autoEatStews);
+            autoEat.setMinFoodValue(config.autoEatMinFoodValue);
+            autoEat.setDisconnectOnNoFood(config.autoEatDisconnectOnNoFood);
+        }
+    }
+    
+    // ========== Helper Methods ==========
+    
+    private boolean isDirectMessageToPlayer(String messageText, String playerNameLower) {
+        // Quick checks first
+        if (messageText.contains(" whispers to you:") ||
+            messageText.contains(" whispers:") ||
+            messageText.contains(" -> me]")) {
+            return true;
+        }
+        
+        // Player name checks
+        if (messageText.contains("/msg " + playerNameLower) ||
+            messageText.contains("/tell " + playerNameLower) ||
+            messageText.contains("/w " + playerNameLower) ||
+            messageText.contains(" -> " + playerNameLower) ||
+            messageText.contains("@" + playerNameLower)) {
+            return true;
+        }
+        
+        // Start/end checks
+        if (messageText.startsWith(playerNameLower + ",") ||
+            messageText.startsWith(playerNameLower + ":") ||
+            messageText.endsWith(" " + playerNameLower) ||
+            messageText.endsWith(" " + playerNameLower + "?")) {
+            return true;
+        }
+        
+        return false;
+    }
+    
+    private boolean isOverworldDimension(MinecraftClient client) {
+        if (client.world == null) return false;
+        
+        // Cache dimension check for performance (check every 5 seconds)
+        long currentTime = System.currentTimeMillis();
+        if (currentTime - lastDimensionCheck < 5000 && cachedDimension != null) {
+            return !cachedDimension.contains("the_nether") && !cachedDimension.contains("the_end");
+        }
+        
+        cachedDimension = client.world.getRegistryKey().getValue().toString();
+        lastDimensionCheck = currentTime;
+        
+        boolean isOverworld = !cachedDimension.contains("the_nether") && !cachedDimension.contains("the_end");
+        if (!isOverworld) {
+            LOGGER.debug("In dimension {}, sleeping disabled (beds explode!)", cachedDimension);
+        }
+        return isOverworld;
+    }
+    
+    private int calculateTicksUntilNight(long timeOfDay) {
+        int ticksUntilNight;
+        
+        int wakeUpMarginTicks = config.wakeUpMarginSeconds * TICKS_PER_SECOND;
+        
+        if (timeOfDay < NIGHT_START) {
+            // Morning/afternoon - night is coming today
+            ticksUntilNight = NIGHT_START - (int)timeOfDay - wakeUpMarginTicks;
+        } else {
+            // Late night (past NIGHT_END) - night is tomorrow
+            ticksUntilNight = (DAY_LENGTH - (int)timeOfDay) + NIGHT_START - wakeUpMarginTicks;
+        }
+        
+        // Ensure minimum delay
+        return Math.max(ticksUntilNight, TICKS_PER_SECOND);
+    }
+    
+    private int calculateTicksUntilNextNight(long timeOfDay) {
+        int wakeUpMarginTicks = config.wakeUpMarginSeconds * TICKS_PER_SECOND;
+        return (DAY_LENGTH - (int)timeOfDay) + NIGHT_START - wakeUpMarginTicks;
+    }
+    
+    private List<BlockPos> findReachableBeds(MinecraftClient client, ClientPlayerEntity player) {
+        Vec3d playerEyePos = player.getEyePos();
+        BlockPos playerPos = player.getBlockPos();
+        List<BlockPos> reachableBeds = new ArrayList<>();
+        
+        // Use more efficient iteration pattern
+        BlockPos.Mutable mutablePos = new BlockPos.Mutable();
+        
+        for (int x = -BED_SEARCH_RADIUS; x <= BED_SEARCH_RADIUS; x++) {
+            for (int y = -BED_SEARCH_RADIUS; y <= BED_SEARCH_RADIUS; y++) {
+                for (int z = -BED_SEARCH_RADIUS; z <= BED_SEARCH_RADIUS; z++) {
+                    mutablePos.set(playerPos.getX() + x, playerPos.getY() + y, playerPos.getZ() + z);
+                    
+                    // Early distance check before block lookup
+                    Vec3d bedCenter = Vec3d.ofCenter(mutablePos);
+                    double distanceSq = playerEyePos.squaredDistanceTo(bedCenter);
+                    
+                    if (distanceSq <= MAX_INTERACT_DISTANCE_SQ) {
+                        BlockState state = client.world.getBlockState(mutablePos);
+                        if (state.getBlock() instanceof BedBlock) {
+                            reachableBeds.add(mutablePos.toImmutable());
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Sort by distance (closest first)
+        reachableBeds.sort(Comparator.comparingDouble(pos -> 
+            playerEyePos.squaredDistanceTo(Vec3d.ofCenter(pos))));
+        
+        return reachableBeds;
+    }
+    
+    private void scheduleDelayedResponse(MinecraftClient client, String message, long delayMs) {
+        CompletableFuture.delayedExecutor(delayMs, TimeUnit.MILLISECONDS).execute(() -> {
+            client.execute(() -> {
+                sendChatMessage(client, message);
+                
+                // Send follow-up message if disconnect phrase is enabled
+                if (config.disconnectPhraseEnabled && config.disconnectPhrase != null && !config.disconnectPhrase.isEmpty()) {
+                    CompletableFuture.delayedExecutor(500, TimeUnit.MILLISECONDS).execute(() -> {
+                        client.execute(() -> {
+                            sendChatMessage(client, "To force me to disconnect say: " + config.disconnectPhrase);
+                        });
+                    });
+                }
+            });
+        });
+        
+        lastChatResponse = System.currentTimeMillis();
     }
 }

@@ -20,6 +20,13 @@ public class ConfigScreen extends Screen {
     private TextFieldWidget responseMessageField;
     private TextFieldWidget disconnectPhraseField;
     
+    // AutoEat widgets
+    private CyclingButtonWidget<Boolean> autoEatEnabledButton;
+    private ButtonWidget autoEatThresholdButton;
+    private CyclingButtonWidget<Boolean> autoEatStewsButton;
+    private ButtonWidget autoEatMinFoodButton;
+    private CyclingButtonWidget<Boolean> autoEatDisconnectButton;
+    
     public ConfigScreen(Screen parent) {
         super(Text.literal("AutoAFK Sleep Configuration"));
         this.parent = parent;
@@ -113,6 +120,58 @@ public class ConfigScreen extends Screen {
         this.addDrawableChild(disconnectPhraseField);
         y += spacing + 10;
         
+        // AutoEat Section
+        y += 10; // Extra spacing before AutoEat section
+        
+        // AutoEat Enabled Toggle
+        this.autoEatEnabledButton = this.addDrawableChild(
+            CyclingButtonWidget.onOffBuilder(config.autoEatEnabled)
+                .build(this.width / 2 - 100, y, 200, 20,
+                    Text.literal("AutoEat"),
+                    (button, value) -> {
+                        config.autoEatEnabled = value;
+                        updateWidgetVisibility();
+                    }));
+        y += spacing;
+        
+        // Hunger Threshold
+        this.autoEatThresholdButton = this.addDrawableChild(ButtonWidget.builder(
+                Text.literal("Hunger Threshold: " + config.autoEatHungerThreshold + "/20"),
+                button -> {
+                    config.autoEatHungerThreshold = (config.autoEatHungerThreshold % 19) + 1;
+                    button.setMessage(Text.literal("Hunger Threshold: " + config.autoEatHungerThreshold + "/20"));
+                })
+                .dimensions(this.width / 2 - 100, y, 200, 20)
+                .build());
+        y += spacing;
+        
+        // Eat Stews Toggle
+        this.autoEatStewsButton = this.addDrawableChild(
+            CyclingButtonWidget.onOffBuilder(config.autoEatStews)
+                .build(this.width / 2 - 100, y, 200, 20,
+                    Text.literal("Eat Stews/Soups"),
+                    (button, value) -> config.autoEatStews = value));
+        y += spacing;
+        
+        // Minimum Food Value
+        this.autoEatMinFoodButton = this.addDrawableChild(ButtonWidget.builder(
+                Text.literal("Min Food Value: " + config.autoEatMinFoodValue),
+                button -> {
+                    config.autoEatMinFoodValue = (config.autoEatMinFoodValue % 10) + 1;
+                    button.setMessage(Text.literal("Min Food Value: " + config.autoEatMinFoodValue));
+                })
+                .dimensions(this.width / 2 - 100, y, 200, 20)
+                .build());
+        y += spacing;
+        
+        // Disconnect on No Food Toggle
+        this.autoEatDisconnectButton = this.addDrawableChild(
+            CyclingButtonWidget.onOffBuilder(config.autoEatDisconnectOnNoFood)
+                .build(this.width / 2 - 100, y, 200, 20,
+                    Text.literal("Disconnect if No Food"),
+                    (button, value) -> config.autoEatDisconnectOnNoFood = value));
+        y += spacing + 10;
+        
         // Save Button
         // Instructions Button
         this.addDrawableChild(ButtonWidget.builder(
@@ -148,6 +207,13 @@ public class ConfigScreen extends Screen {
         // Only show disconnect phrase field when disconnect phrase is enabled
         this.disconnectPhraseField.visible = config.disconnectPhraseEnabled;
         this.disconnectPhraseField.setEditable(config.disconnectPhraseEnabled);
+        
+        // Only show AutoEat options when AutoEat is enabled
+        boolean autoEatEnabled = config.autoEatEnabled;
+        this.autoEatThresholdButton.visible = autoEatEnabled;
+        this.autoEatStewsButton.visible = autoEatEnabled;
+        this.autoEatMinFoodButton.visible = autoEatEnabled;
+        this.autoEatDisconnectButton.visible = autoEatEnabled;
     }
     
     @Override

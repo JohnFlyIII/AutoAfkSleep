@@ -25,13 +25,28 @@ public class ModConfig {
     );
     
     // Configuration fields
-    public boolean modEnabled = false;
+    public boolean modEnabled = true;
     public SleepFailureAction sleepFailureAction = SleepFailureAction.NO_ACTION;
     public String customCommand = "/move lobby";
     public boolean autoRespond = true;
     public String responseMessage = "I'm AFK with auto-sleep enabled. I'll sleep automatically when night comes!";
     public boolean disconnectPhraseEnabled = true;
     public String disconnectPhrase = "afk-logout";
+    
+    // Advanced timing configuration (in seconds)
+    public int wakeUpMarginSeconds = 30; // Wake up this many seconds before night
+    public int checkIntervalNightSeconds = 30; // Check interval during night
+    public int checkIntervalFailureSeconds = 60; // Check interval after failures
+    public int maxConsecutiveFailures = 3; // Stop trying after this many failures
+    public int chatResponseCooldownSeconds = 30; // Cooldown between auto-responses
+    public int sleepAttemptCooldownSeconds = 3; // Cooldown between sleep attempts
+    
+    // AutoEat configuration
+    public boolean autoEatEnabled = true;
+    public int autoEatHungerThreshold = 14; // Start eating when hunger <= this (max 20)
+    public boolean autoEatStews = true; // Whether to eat stews/soups
+    public int autoEatMinFoodValue = 2; // Minimum hunger value of food to eat
+    public boolean autoEatDisconnectOnNoFood = true; // Disconnect when out of safe food
     
     public enum SleepFailureAction {
         DISCONNECT("Disconnect"),
@@ -99,5 +114,17 @@ public class ModConfig {
         if (disconnectPhrase == null || disconnectPhrase.trim().isEmpty()) {
             disconnectPhrase = "afk-logout";
         }
+        
+        // Validate timing parameters (ensure reasonable bounds)
+        wakeUpMarginSeconds = Math.max(10, Math.min(120, wakeUpMarginSeconds));
+        checkIntervalNightSeconds = Math.max(10, Math.min(300, checkIntervalNightSeconds));
+        checkIntervalFailureSeconds = Math.max(30, Math.min(600, checkIntervalFailureSeconds));
+        maxConsecutiveFailures = Math.max(1, Math.min(10, maxConsecutiveFailures));
+        chatResponseCooldownSeconds = Math.max(10, Math.min(300, chatResponseCooldownSeconds));
+        sleepAttemptCooldownSeconds = Math.max(1, Math.min(30, sleepAttemptCooldownSeconds));
+        
+        // Validate AutoEat parameters
+        autoEatHungerThreshold = Math.max(1, Math.min(19, autoEatHungerThreshold));
+        autoEatMinFoodValue = Math.max(1, Math.min(20, autoEatMinFoodValue));
     }
 }
