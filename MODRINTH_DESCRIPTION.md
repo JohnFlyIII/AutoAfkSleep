@@ -1,6 +1,6 @@
-# AutoAFK Sleep - Automatic Bed Usage for AFK Players
+# AutoAFK Sleep - Automatic Bed Usage & Hunger Management for AFK Players (v1.2.1)
 
-Never worry about surviving the night while AFK again! This client-side mod automatically uses nearby beds when night falls, keeping you safe while you're away from your keyboard.
+Never worry about surviving the night or starving while AFK again! This client-side mod automatically uses nearby beds when night falls and manages your hunger, keeping you safe and fed while you're away from your keyboard.
 
 ## ✨ Key Features
 
@@ -8,7 +8,20 @@ Never worry about surviving the night while AFK again! This client-side mod auto
 - Automatically detects nighttime and attempts to sleep
 - Must be within 2 blocks of a bed (Minecraft's interaction range)
 - Only works in the Overworld for safety (beds explode in other dimensions!)
-- Intelligent timing system that checks more frequently as night approaches
+- Intelligent timing system with optimized performance - checks more frequently as night approaches
+
+**🍖 Auto-Eat Feature** *(New in v1.2.0, Fixed in v1.2.1)*
+- Automatically eats food when hunger drops below configurable threshold
+- Smart food selection algorithm:
+  - Prioritizes safe, non-magical food (bread, meat, vegetables)
+  - Avoids poisonous items (rotten flesh, spider eyes, poisonous potatoes)
+  - Saves magical food (golden apples, enchanted items) for manual use
+- Configurable settings:
+  - Hunger threshold (default: 14/20)
+  - Minimum food value filter
+  - Option to include stews and soups
+- Auto-disconnect when critically hungry with no safe food available
+- **v1.2.1 Fix**: Resolved critical slot selection issue - AutoEat now works reliably
 
 **💬 Chat Monitoring & Auto-Response**
 - Responds to direct messages and @mentions while you're AFK
@@ -28,10 +41,11 @@ When unable to sleep, choose your preferred action:
 - **Auto-Disconnect** - Safely disconnects from the server
 - **Custom Command** - Executes any command (e.g., `/spawn`, `/home`, `/warp afkspot`)
 
-**🛡️ Safety Features**
-- Configure custom disconnect phrases
-- Set auto-response messages
-- Cooldown system prevents spam
+**⚡ Performance Optimized** *(v1.1.0+)*
+- Intelligent scheduling reduces CPU usage by up to 90%
+- Non-blocking operations ensure smooth gameplay
+- Configurable timing parameters for all features
+- Minimal server impact with smart polling intervals
 
 ## 📋 Requirements
 
@@ -72,6 +86,8 @@ Licensed under Apache 2.0 - You're free to use, modify, and redistribute with at
 
 Special thanks to the players at MCVerse City for testing and providing valuable feedback during development!
 
+https://mcverse.city/
+
 ---
 
-*Perfect for AFK farms, long building sessions, or any time you need to step away from the game! Stay safe from mobs while maintaining your server presence.*
+*Perfect for AFK farms, long building sessions, or any time you need to step away from the game! Stay safe from mobs and hunger while maintaining your server presence. Version 1.2.1 brings reliable AutoEat functionality to keep you fed during those long AFK sessions!*
